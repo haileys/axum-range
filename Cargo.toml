@@ -1,7 +1,12 @@
 [package]
-name = "axum_range"
+name = "axum-range"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+description = "HTTP Range responses for axum"
+homepage = "https://github.com/haileys/axum-range"
+repository = "https://github.com/haileys/axum-range"
+documentation = "https://docs.rs/axum-range"
 
 [dependencies]
 axum = { version = "0.6.20", default-features = false, features = ["headers"] }
