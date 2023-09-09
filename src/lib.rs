@@ -1,6 +1,7 @@
-pub mod file;
+mod file;
+mod stream;
 
-use std::{io, mem};
+use std::io;
 use std::ops::Bound;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -9,14 +10,29 @@ use axum::TypedHeader;
 use axum::http::StatusCode;
 use axum::headers::{Range, ContentRange, ContentLength};
 use axum::response::{IntoResponse, Response};
-use bytes::{Bytes, BytesMut};
-use futures::Stream;
-use pin_project::pin_project;
-use tokio::io::{ReadBuf, AsyncRead, AsyncSeek};
+use tokio::io::{AsyncRead, AsyncSeek};
+
+pub use file::KnownSize;
+pub use stream::RangedStream;
 
 pub const IO_BUFFER_SIZE: usize = 64 * 1024;
 
-pub trait RangeBody: AsyncRead + AsyncSeek {
+pub trait AsyncSeekStart {
+    fn start_seek(self: Pin<&mut Self>, position: u64) -> io::Result<()> ;
+    fn poll_complete(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>>;
+}
+
+impl<T: AsyncSeek> AsyncSeekStart for T {
+    fn start_seek(self: Pin<&mut Self>, position: u64) -> io::Result<()> {
+        AsyncSeek::start_seek(self, io::SeekFrom::Start(position))
+    }
+
+    fn poll_complete(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        AsyncSeek::poll_complete(self, cx).map_ok(|_| ())
+    }
+}
+
+pub trait RangeBody: AsyncRead + AsyncSeekStart {
     /// The total size of the underlying file.
     ///
     /// This should not change for the lifetime of the object once queried.
@@ -57,8 +73,10 @@ impl<B: RangeBody> Ranged<B> {
         // check seek positions and return with 416 Range Not Satisfiable if invalid
         let seek_start_beyond_seek_end = seek_start > seek_end_excl;
         let seek_end_beyond_file_range = seek_end_excl > total_bytes;
+        // we could use >= above but I think this reads more clearly:
+        let zero_length_range = seek_start == seek_end_excl;
 
-        if seek_start_beyond_seek_end || seek_end_beyond_file_range {
+        if seek_start_beyond_seek_end || seek_end_beyond_file_range || zero_length_range {
             let content_range = ContentRange::unsatisfied_bytes(total_bytes);
             return Err(RangeNotSatisfiable(content_range));
         }
@@ -69,14 +87,13 @@ impl<B: RangeBody> Ranged<B> {
                 .expect("ContentRange::bytes cannot panic in this usage")
         });
 
-        let stream = RangedStream {
-            state: StreamState::Seek { start: seek_start, remaining: seek_end_excl - seek_start },
-            body: self.body,
-        };
+        let content_length = ContentLength(seek_end_excl - seek_start);
+
+        let stream = RangedStream::new(self.body, seek_start, content_length.0);
 
         Ok(RangedResponse {
             content_range,
-            content_length: ContentLength(total_bytes),
+            content_length,
             stream,
         })
     }
@@ -88,6 +105,7 @@ impl<B: RangeBody> IntoResponse for Ranged<B> {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct RangeNotSatisfiable(pub ContentRange);
 
 impl IntoResponse for RangeNotSatisfiable {
@@ -110,84 +128,154 @@ impl<B: RangeBody> IntoResponse for RangedResponse<B> {
     }
 }
 
-#[pin_project]
-pub struct RangedStream<B> {
-    state: StreamState,
-    #[pin]
-    body: B,
-}
+#[cfg(test)]
+mod tests {
+    use std::io;
 
-enum StreamState {
-    Seek { start: u64, remaining: u64 },
-    Seeking { remaining: u64 },
-    Reading { buffer: BytesMut, remaining: u64 },
-}
+    use axum::headers::ContentRange;
+    use axum::headers::Header;
+    use axum::headers::Range;
+    use axum::http::HeaderValue;
+    use bytes::Bytes;
+    use futures::{pin_mut, Stream, StreamExt};
+    use tokio::fs::File;
 
-fn allocate_buffer() -> BytesMut {
-    BytesMut::with_capacity(IO_BUFFER_SIZE)
-}
+    use crate::Ranged;
+    use crate::KnownSize;
 
-impl<B: RangeBody> Stream for RangedStream<B> {
-    type Item = io::Result<Bytes>;
-
-    fn poll_next(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>
-    ) -> Poll<Option<io::Result<Bytes>>> {
-        let mut this = self.project();
-
-        if let StreamState::Seek { start, remaining } = *this.state {
-            match this.body.as_mut().start_seek(io::SeekFrom::Start(start)) {
-                Err(e) => { return Poll::Ready(Some(Err(e))); }
-                Ok(()) => { *this.state = StreamState::Seeking { remaining }; }
-            }
+    async fn collect_stream(stream: impl Stream<Item = io::Result<Bytes>>) -> String {
+        let mut string = String::new();
+        pin_mut!(stream);
+        while let Some(chunk) = stream.next().await.transpose().unwrap() {
+            string += std::str::from_utf8(&chunk).unwrap();
         }
+        string
+    }
 
-        if let StreamState::Seeking { remaining } = *this.state {
-            match this.body.as_mut().poll_complete(cx) {
-                Poll::Pending => { return Poll::Pending; }
-                Poll::Ready(Err(e)) => { return Poll::Ready(Some(Err(e))); }
-                Poll::Ready(Ok(_)) => {
-                    let buffer = allocate_buffer();
-                    *this.state = StreamState::Reading { buffer, remaining };
-                }
-            }
-        }
+    fn range(header: &str) -> Option<Range> {
+        let val = HeaderValue::from_str(header).unwrap();
+        Some(Range::decode(&mut [val].iter()).unwrap())
+    }
 
-        if let StreamState::Reading { buffer, remaining } = this.state {
-            let uninit = buffer.spare_capacity_mut();
+    async fn body() -> KnownSize<File> {
+        let file = File::open("test/fixture.txt").await.unwrap();
+        KnownSize::file(file).await.unwrap()
+    }
 
-            // calculate max number of bytes to read in this iteration, the
-            // smaller of the buffer size and the number of bytes remaining
-            let nbytes = std::cmp::min(
-                uninit.len(),
-                usize::try_from(*remaining).unwrap_or(usize::MAX),
-            );
+    #[tokio::test]
+    async fn test_full_response() {
+        let ranged = Ranged::new(None, body().await);
 
-            let mut read_buf = ReadBuf::uninit(&mut uninit[0..nbytes]);
+        let response = ranged.try_respond().expect("try_respond should return Ok");
 
-            match this.body.as_mut().poll_read(cx, &mut read_buf) {
-                Poll::Pending => { return Poll::Pending; }
-                Poll::Ready(Err(e)) => { return Poll::Ready(Some(Err(e))); }
-                Poll::Ready(Ok(())) => {
-                    match read_buf.filled().len() {
-                        0 => { return Poll::Ready(None); }
-                        n => {
-                            // replace state buffer and take this one to return
-                            let chunk = mem::replace(buffer, allocate_buffer());
-                            // subtract the number of bytes we just read from
-                            // state.remaining, this usize->u64 conversion is
-                            // guaranteed to always succeed, because n cannot be
-                            // larger than remaining due to the cmp::min above
-                            *remaining -= u64::try_from(n).unwrap();
-                            // return this chunk
-                            return Poll::Ready(Some(Ok(chunk.freeze())));
-                        }
-                    }
-                }
-            }
-        }
+        assert_eq!(54, response.content_length.0);
+        assert!(response.content_range.is_none());
+        assert_eq!("Hello world this is a file to test range requests on!\n",
+            &collect_stream(response.stream).await);
+    }
 
-        unreachable!();
+    #[tokio::test]
+    async fn test_partial_response_1() {
+        let ranged = Ranged::new(range("bytes=0-29"), body().await);
+
+        let response = ranged.try_respond().expect("try_respond should return Ok");
+
+        assert_eq!(30, response.content_length.0);
+
+        let expected_content_range = ContentRange::bytes(0..30, 54).unwrap();
+        assert_eq!(Some(expected_content_range), response.content_range);
+
+        assert_eq!("Hello world this is a file to ",
+            &collect_stream(response.stream).await);
+    }
+
+    #[tokio::test]
+    async fn test_partial_response_2() {
+        let ranged = Ranged::new(range("bytes=30-53"), body().await);
+
+        let response = ranged.try_respond().expect("try_respond should return Ok");
+
+        assert_eq!(24, response.content_length.0);
+
+        let expected_content_range = ContentRange::bytes(30..54, 54).unwrap();
+        assert_eq!(Some(expected_content_range), response.content_range);
+
+        assert_eq!("test range requests on!\n",
+            &collect_stream(response.stream).await);
+    }
+
+    #[tokio::test]
+    async fn test_unbounded_start_response() {
+        let ranged = Ranged::new(range("bytes=-20"), body().await);
+
+        let response = ranged.try_respond().expect("try_respond should return Ok");
+
+        assert_eq!(21, response.content_length.0);
+
+        let expected_content_range = ContentRange::bytes(0..21, 54).unwrap();
+        assert_eq!(Some(expected_content_range), response.content_range);
+
+        assert_eq!("Hello world this is a",
+            &collect_stream(response.stream).await);
+    }
+
+    #[tokio::test]
+    async fn test_unbounded_end_response() {
+        let ranged = Ranged::new(range("bytes=40-"), body().await);
+
+        let response = ranged.try_respond().expect("try_respond should return Ok");
+
+        assert_eq!(14, response.content_length.0);
+
+        let expected_content_range = ContentRange::bytes(40..54, 54).unwrap();
+        assert_eq!(Some(expected_content_range), response.content_range);
+
+        assert_eq!(" requests on!\n",
+            &collect_stream(response.stream).await);
+    }
+
+    #[tokio::test]
+    async fn test_one_byte_response() {
+        let ranged = Ranged::new(range("bytes=30-30"), body().await);
+
+        let response = ranged.try_respond().expect("try_respond should return Ok");
+
+        assert_eq!(1, response.content_length.0);
+
+        let expected_content_range = ContentRange::bytes(30..31, 54).unwrap();
+        assert_eq!(Some(expected_content_range), response.content_range);
+
+        assert_eq!("t",
+            &collect_stream(response.stream).await);
+    }
+
+    #[tokio::test]
+    async fn test_invalid_range() {
+        let ranged = Ranged::new(range("bytes=30-29"), body().await);
+
+        let err = ranged.try_respond().err().expect("try_respond should return Err");
+
+        let expected_content_range = ContentRange::unsatisfied_bytes(54);
+        assert_eq!(expected_content_range, err.0)
+    }
+
+    #[tokio::test]
+    async fn test_range_end_exceed_length() {
+        let ranged = Ranged::new(range("bytes=30-99"), body().await);
+
+        let err = ranged.try_respond().err().expect("try_respond should return Err");
+
+        let expected_content_range = ContentRange::unsatisfied_bytes(54);
+        assert_eq!(expected_content_range, err.0)
+    }
+
+    #[tokio::test]
+    async fn test_range_start_exceed_length() {
+        let ranged = Ranged::new(range("bytes=99-"), body().await);
+
+        let err = ranged.try_respond().err().expect("try_respond should return Err");
+
+        let expected_content_range = ContentRange::unsatisfied_bytes(54);
+        assert_eq!(expected_content_range, err.0)
     }
 }

@@ -3,21 +3,30 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use pin_project::pin_project;
-use tokio::io::{ReadBuf, AsyncRead, AsyncSeek};
+use tokio::io::{ReadBuf, AsyncRead, AsyncSeek, AsyncSeekExt};
 
-use crate::RangeBody;
+use crate::{RangeBody, AsyncSeekStart};
 
 #[pin_project]
-pub struct KnownSize<B: AsyncRead + AsyncSeek> {
+pub struct KnownSize<B: AsyncRead + AsyncSeekStart> {
     byte_size: u64,
     #[pin]
     body: B,
 }
 
-impl<B: AsyncRead + AsyncSeek> KnownSize<B> {
+impl KnownSize<tokio::fs::File> {
+    /// Uses `File::metadata` to determine file size.
     pub async fn file(file: tokio::fs::File) -> io::Result<KnownSize<tokio::fs::File>> {
         let byte_size = file.metadata().await?.len();
         Ok(KnownSize { byte_size, body: file })
+    }
+}
+
+impl<B: AsyncRead + AsyncSeek + Unpin> KnownSize<B> {
+    /// Uses `seek` to determine size by seeking to the end and getting stream position.
+    pub async fn seek(mut body: B) -> io::Result<KnownSize<B>> {
+        let byte_size = Pin::new(&mut body).seek(io::SeekFrom::End(0)).await?;
+        Ok(KnownSize { byte_size, body })
     }
 }
 
@@ -53,5 +62,27 @@ impl<B: AsyncRead + AsyncSeek> AsyncSeek for KnownSize<B> {
 impl<B: AsyncRead + AsyncSeek> RangeBody for KnownSize<B> {
     fn byte_size(&self) -> u64 {
         self.byte_size
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::fs::File;
+    use crate::RangeBody;
+
+    use super::KnownSize;
+
+    #[tokio::test]
+    async fn test_file_size() {
+        let file = File::open("test/fixture.txt").await.unwrap();
+        let known_size = KnownSize::file(file).await.unwrap();
+        assert_eq!(54, known_size.byte_size());
+    }
+
+    #[tokio::test]
+    async fn test_seek_size() {
+        let file = File::open("test/fixture.txt").await.unwrap();
+        let known_size = KnownSize::file(file).await.unwrap();
+        assert_eq!(54, known_size.byte_size());
     }
 }
