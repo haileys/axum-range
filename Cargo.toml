@@ -17,4 +17,4 @@ tokio = { version = "1.32.0", features = ["fs", "io-util"] }
 
 [dev-dependencies]
 assert_matches = "1.5"
-tokio = { version = "*", features = ["rt", "macros"] }
+tokio = { version = "1", features = ["rt", "macros"] }
