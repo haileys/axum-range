@@ -1,6 +1,6 @@
 [package]
 name = "axum-range"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 license = "MIT"
 description = "HTTP Range responses for axum"
