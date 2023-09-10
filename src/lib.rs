@@ -55,7 +55,7 @@ use std::task::{Context, Poll};
 
 use axum::TypedHeader;
 use axum::http::StatusCode;
-use axum::headers::{Range, ContentRange, ContentLength};
+use axum::headers::{Range, ContentRange, ContentLength, AcceptRanges};
 use axum::response::{IntoResponse, Response};
 use tokio::io::{AsyncRead, AsyncSeek};
 
@@ -184,6 +184,7 @@ impl<B: RangeBody + Send + 'static> IntoResponse for RangedResponse<B> {
     fn into_response(self) -> Response {
         let content_range = self.content_range.map(TypedHeader);
         let content_length = TypedHeader(self.content_length);
+        let accept_ranges = TypedHeader(AcceptRanges::bytes());
         let stream = self.stream;
 
         let status = match content_range {
@@ -191,7 +192,7 @@ impl<B: RangeBody + Send + 'static> IntoResponse for RangedResponse<B> {
             None => StatusCode::OK,
         };
 
-        (status, content_range, content_length, stream).into_response()
+        (status, content_range, content_length, accept_ranges, stream).into_response()
     }
 }
 
