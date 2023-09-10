@@ -11,7 +11,6 @@ MIT license.
 ```rust
 use axum::TypedHeader;
 use axum::headers::Range;
-use axum::http::StatusCode;
 
 use tokio::fs::File;
 

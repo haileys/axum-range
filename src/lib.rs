@@ -15,7 +15,6 @@
 //! ```
 //! use axum::{Router, TypedHeader};
 //! use axum::headers::Range;
-//! use axum::http::StatusCode;
 //! use axum::routing::get;
 //!
 //! use tokio::fs::File;
