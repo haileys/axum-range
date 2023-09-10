@@ -18,7 +18,6 @@ use tokio::fs::File;
 use axum_range::Ranged;
 use axum_range::KnownSize;
 
-#[axum::debug_handler]
 async fn file(range: Option<TypedHeader<Range>>) -> Ranged<KnownSize<File>> {
     let file = File::open("archlinux-x86_64.iso").await.unwrap();
     let body = KnownSize::file(file).await.unwrap();

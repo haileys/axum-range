@@ -23,7 +23,6 @@
 //! use axum_range::Ranged;
 //! use axum_range::KnownSize;
 //!
-//! #[axum::debug_handler]
 //! async fn file(range: Option<TypedHeader<Range>>) -> Ranged<KnownSize<File>> {
 //!     let file = File::open("The Sims 1 - The Complete Collection.rar").await.unwrap();
 //!     let body = KnownSize::file(file).await.unwrap();
