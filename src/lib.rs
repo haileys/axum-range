@@ -1,3 +1,52 @@
+//! # axum-range
+//!
+//! HTTP range responses for [`axum`][1].
+//!
+//! Fully generic, supports any body implementing the [`RangeBody`] trait.
+//!
+//! Any type implementing both [`AsyncRead`] and [`AsyncSeekStart`] can be
+//! used the [`KnownSize`] adapter struct. There is also special cased support
+//! for [`tokio::fs::File`], see the [`KnownSize::file`] method.
+//!
+//! [`AsyncSeekStart`] is a trait defined by this crate which only allows
+//! seeking from the start of a file. It is automatically implemented for any
+//! type implementing [`AsyncSeek`].
+//!
+//! ```
+//! use axum::{Router, TypedHeader};
+//! use axum::headers::Range;
+//! use axum::http::StatusCode;
+//! use axum::routing::get;
+//!
+//! use tokio::fs::File;
+//!
+//! use axum_range::Ranged;
+//! use axum_range::KnownSize;
+//!
+//! #[axum::debug_handler]
+//! async fn file(range: Option<TypedHeader<Range>>) -> Ranged<KnownSize<File>> {
+//!     let file = File::open("The Sims 1 - The Complete Collection.rar").await.unwrap();
+//!     let body = KnownSize::file(file).await.unwrap();
+//!     let range = range.map(|TypedHeader(range)| range);
+//!     Ranged::new(range, body)
+//! }
+//!
+//! #[tokio::main]
+//! async fn main() {
+//!     // build our application with a single route
+//!     let _app = Router::<()>::new().route("/", get(file));
+//!
+//!     // run it with hyper on localhost:3000
+//!     #[cfg(feature = "run_server_in_example")]
+//!     axum::Server::bind(&"0.0.0.0:3000".parse().unwrap())
+//!        .serve(_app.into_make_service())
+//!        .await
+//!        .unwrap();
+//! }
+//! ```
+//!
+//! [1]: https://docs.rs/axum
+
 mod file;
 mod stream;
 
@@ -15,10 +64,12 @@ use tokio::io::{AsyncRead, AsyncSeek};
 pub use file::KnownSize;
 pub use stream::RangedStream;
 
-pub const IO_BUFFER_SIZE: usize = 64 * 1024;
-
+/// [`AsyncSeek`] narrowed to only allow seeking from start.
 pub trait AsyncSeekStart {
-    fn start_seek(self: Pin<&mut Self>, position: u64) -> io::Result<()> ;
+    /// Same semantics as [`AsyncSeek::start_seek`], always passing position as the `SeekFrom::Start` variant.
+    fn start_seek(self: Pin<&mut Self>, position: u64) -> io::Result<()>;
+
+    /// Same semantics as [`AsyncSeek::poll_complete`], returning `()` instead of the new stream position.
     fn poll_complete(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>>;
 }
 
@@ -32,6 +83,7 @@ impl<T: AsyncSeek> AsyncSeekStart for T {
     }
 }
 
+/// An [`AsyncRead`] and [`AsyncSeekStart`] with a fixed known byte size.
 pub trait RangeBody: AsyncRead + AsyncSeekStart {
     /// The total size of the underlying file.
     ///
@@ -40,16 +92,22 @@ pub trait RangeBody: AsyncRead + AsyncSeekStart {
     fn byte_size(&self) -> u64;
 }
 
-pub struct Ranged<B: RangeBody> {
+/// The main responder type. Implements [`IntoResponse`].
+pub struct Ranged<B: RangeBody + Send + 'static> {
     range: Option<Range>,
     body: B,
 }
 
-impl<B: RangeBody> Ranged<B> {
+impl<B: RangeBody + Send + 'static> Ranged<B> {
+    /// Construct a ranged response over any type implementing [`RangeBody`]
+    /// and an optional [`Range`] header.
     pub fn new(range: Option<Range>, body: B) -> Self {
         Ranged { range, body }
     }
 
+    /// Responds to the request, returning headers and body as
+    /// [`RangedResponse`]. Returns [`RangeNotSatisfiable`] error if requested
+    /// range in header was not satisfiable.
     pub fn try_respond(self) -> Result<RangedResponse<B>, RangeNotSatisfiable> {
         let total_bytes = self.body.byte_size();
 
@@ -99,12 +157,13 @@ impl<B: RangeBody> Ranged<B> {
     }
 }
 
-impl<B: RangeBody> IntoResponse for Ranged<B> {
+impl<B: RangeBody + Send + 'static> IntoResponse for Ranged<B> {
     fn into_response(self) -> Response {
         self.try_respond().into_response()
     }
 }
 
+/// Error type indicating that the requested range was not satisfiable. Implements [`IntoResponse`].
 #[derive(Debug, Clone)]
 pub struct RangeNotSatisfiable(pub ContentRange);
 
@@ -116,15 +175,25 @@ impl IntoResponse for RangeNotSatisfiable {
     }
 }
 
+/// Data type containing computed headers and body for a range response. Implements [`IntoResponse`].
 pub struct RangedResponse<B> {
     pub content_range: Option<ContentRange>,
     pub content_length: ContentLength,
     pub stream: RangedStream<B>,
 }
 
-impl<B: RangeBody> IntoResponse for RangedResponse<B> {
+impl<B: RangeBody + Send + 'static> IntoResponse for RangedResponse<B> {
     fn into_response(self) -> Response {
-        todo!();
+        let content_range = self.content_range.map(TypedHeader);
+        let content_length = TypedHeader(self.content_length);
+        let stream = self.stream;
+
+        let status = match content_range {
+            Some(_) => StatusCode::PARTIAL_CONTENT,
+            None => StatusCode::OK,
+        };
+
+        (status, content_range, content_length, stream).into_response()
     }
 }
 

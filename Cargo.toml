@@ -8,13 +8,18 @@ homepage = "https://github.com/haileys/axum-range"
 repository = "https://github.com/haileys/axum-range"
 documentation = "https://docs.rs/axum-range"
 
+[features]
+run_server_in_example = []
+
 [dependencies]
 axum = { version = "0.6.20", default-features = false, features = ["headers"] }
 bytes = "1.5.0"
 futures = { version = "0.3.28", default-features = false, features = ["std"] }
+http-body = "0.4.5"
 pin-project = "1.1.3"
 tokio = { version = "1.32.0", features = ["fs", "io-util"] }
 
 [dev-dependencies]
 assert_matches = "1.5"
-tokio = { version = "1", features = ["rt", "macros"] }
+axum = { version = "0", features = ["macros"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }

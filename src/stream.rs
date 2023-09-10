@@ -2,7 +2,9 @@ use std::{io, mem};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
+use axum::response::{Response, IntoResponse};
 use bytes::{Bytes, BytesMut};
+use http_body::{Body, SizeHint};
 use futures::Stream;
 use pin_project::pin_project;
 use tokio::io::ReadBuf;
@@ -11,26 +13,57 @@ use crate::RangeBody;
 
 const IO_BUFFER_SIZE: usize = 64 * 1024;
 
+/// Response body stream. Implements [`Stream`], [`Body`], and [`IntoResponse`].
 #[pin_project]
 pub struct RangedStream<B> {
     state: StreamState,
+    length: u64,
     #[pin]
     body: B,
 }
 
-impl<B: RangeBody> RangedStream<B> {
-    pub fn new(body: B, start: u64, length: u64) -> Self {
+impl<B: RangeBody + Send + 'static> RangedStream<B> {
+    pub(crate) fn new(body: B, start: u64, length: u64) -> Self {
         RangedStream {
-            state: StreamState::Seek { start, remaining: length },
+            state: StreamState::Seek { start },
+            length,
             body,
         }
     }
 }
 
+#[derive(Debug)]
 enum StreamState {
-    Seek { start: u64, remaining: u64 },
+    Seek { start: u64 },
     Seeking { remaining: u64 },
     Reading { buffer: BytesMut, remaining: u64 },
+}
+
+impl<B: RangeBody + Send + 'static> IntoResponse for RangedStream<B> {
+    fn into_response(self) -> Response {
+        Response::new(axum::body::boxed(self))
+    }
+}
+
+impl<B: RangeBody> Body for RangedStream<B> {
+    type Data = Bytes;
+    type Error = io::Error;
+
+    fn size_hint(&self) -> SizeHint {
+        SizeHint::with_exact(self.length)
+    }
+
+    fn poll_data(self: Pin<&mut Self>, cx: &mut Context<'_>)
+        -> Poll<Option<io::Result<Bytes>>>
+    {
+        self.poll_next(cx)
+    }
+
+    fn poll_trailers(self: Pin<&mut Self>, _: &mut Context<'_>)
+        -> Poll<io::Result<Option<axum::http::HeaderMap>>>
+    {
+        Poll::Ready(Ok(None))
+    }
 }
 
 impl<B: RangeBody> Stream for RangedStream<B> {
@@ -42,10 +75,13 @@ impl<B: RangeBody> Stream for RangedStream<B> {
     ) -> Poll<Option<io::Result<Bytes>>> {
         let mut this = self.project();
 
-        if let StreamState::Seek { start, remaining } = *this.state {
+        if let StreamState::Seek { start } = *this.state {
             match this.body.as_mut().start_seek(start) {
                 Err(e) => { return Poll::Ready(Some(Err(e))); }
-                Ok(()) => { *this.state = StreamState::Seeking { remaining }; }
+                Ok(()) => {
+                    let remaining = *this.length;
+                    *this.state = StreamState::Seeking { remaining };
+                }
             }
         }
 

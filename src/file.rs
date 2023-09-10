@@ -7,6 +7,7 @@ use tokio::io::{ReadBuf, AsyncRead, AsyncSeek, AsyncSeekExt};
 
 use crate::{RangeBody, AsyncSeekStart};
 
+/// Implements `RangeBody` for any [`AsyncRead`] and [`AsyncSeekStart`], constructed with a fixed byte size.
 #[pin_project]
 pub struct KnownSize<B: AsyncRead + AsyncSeekStart> {
     byte_size: u64,
@@ -15,10 +16,17 @@ pub struct KnownSize<B: AsyncRead + AsyncSeekStart> {
 }
 
 impl KnownSize<tokio::fs::File> {
-    /// Uses `File::metadata` to determine file size.
+    /// Calls [`tokio::fs::File::metadata`] to determine file size.
     pub async fn file(file: tokio::fs::File) -> io::Result<KnownSize<tokio::fs::File>> {
         let byte_size = file.metadata().await?.len();
         Ok(KnownSize { byte_size, body: file })
+    }
+}
+
+impl<B: AsyncRead + AsyncSeekStart> KnownSize<B> {
+    /// Construct a [`KnownSize`] instance with a byte size supplied manually.
+    pub fn sized(body: B, byte_size: u64) -> Self {
+        KnownSize { byte_size, body }
     }
 }
 
@@ -30,7 +38,7 @@ impl<B: AsyncRead + AsyncSeek + Unpin> KnownSize<B> {
     }
 }
 
-impl<B: AsyncRead + AsyncSeek> AsyncRead for KnownSize<B> {
+impl<B: AsyncRead + AsyncSeekStart> AsyncRead for KnownSize<B> {
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -41,10 +49,10 @@ impl<B: AsyncRead + AsyncSeek> AsyncRead for KnownSize<B> {
     }
 }
 
-impl<B: AsyncRead + AsyncSeek> AsyncSeek for KnownSize<B> {
+impl<B: AsyncRead + AsyncSeekStart> AsyncSeekStart for KnownSize<B> {
     fn start_seek(
         self: Pin<&mut Self>,
-        position: io::SeekFrom
+        position: u64,
     ) -> io::Result<()> {
         let this = self.project();
         this.body.start_seek(position)
@@ -53,13 +61,13 @@ impl<B: AsyncRead + AsyncSeek> AsyncSeek for KnownSize<B> {
     fn poll_complete(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-    ) -> Poll<io::Result<u64>> {
+    ) -> Poll<io::Result<()>> {
         let this = self.project();
         this.body.poll_complete(cx)
     }
 }
 
-impl<B: AsyncRead + AsyncSeek> RangeBody for KnownSize<B> {
+impl<B: AsyncRead + AsyncSeekStart> RangeBody for KnownSize<B> {
     fn byte_size(&self) -> u64 {
         self.byte_size
     }
