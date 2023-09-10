@@ -7,7 +7,7 @@ use tokio::io::{ReadBuf, AsyncRead, AsyncSeek, AsyncSeekExt};
 
 use crate::{RangeBody, AsyncSeekStart};
 
-/// Implements `RangeBody` for any [`AsyncRead`] and [`AsyncSeekStart`], constructed with a fixed byte size.
+/// Implements [`RangeBody`] for any [`AsyncRead`] and [`AsyncSeekStart`], constructed with a fixed byte size.
 #[pin_project]
 pub struct KnownSize<B: AsyncRead + AsyncSeekStart> {
     byte_size: u64,
