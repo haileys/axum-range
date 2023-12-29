@@ -4,7 +4,7 @@ use std::task::{Context, Poll};
 
 use axum::response::{Response, IntoResponse};
 use bytes::{Bytes, BytesMut};
-use http_body::{Body, SizeHint};
+use http_body::{Body, SizeHint, Frame};
 use futures::Stream;
 use pin_project::pin_project;
 use tokio::io::ReadBuf;
@@ -41,7 +41,7 @@ enum StreamState {
 
 impl<B: RangeBody + Send + 'static> IntoResponse for RangedStream<B> {
     fn into_response(self) -> Response {
-        Response::new(axum::body::boxed(self))
+        Response::new(axum::body::Body::new(self))
     }
 }
 
@@ -53,16 +53,10 @@ impl<B: RangeBody> Body for RangedStream<B> {
         SizeHint::with_exact(self.length)
     }
 
-    fn poll_data(self: Pin<&mut Self>, cx: &mut Context<'_>)
-        -> Poll<Option<io::Result<Bytes>>>
+    fn poll_frame(self: Pin<&mut Self>, cx: &mut Context<'_>)
+        -> Poll<Option<io::Result<Frame<Bytes>>>>
     {
-        self.poll_next(cx)
-    }
-
-    fn poll_trailers(self: Pin<&mut Self>, _: &mut Context<'_>)
-        -> Poll<io::Result<Option<axum::http::HeaderMap>>>
-    {
-        Poll::Ready(Ok(None))
+        self.poll_next(cx).map(|item| item.map(|result| result.map(Frame::data)))
     }
 }
 

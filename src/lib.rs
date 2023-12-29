@@ -53,10 +53,10 @@ use std::ops::Bound;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use axum::TypedHeader;
 use axum::http::StatusCode;
-use axum::headers::{Range, ContentRange, ContentLength, AcceptRanges};
 use axum::response::{IntoResponse, Response};
+use axum_extra::TypedHeader;
+use axum_extra::headers::{Range, ContentRange, ContentLength, AcceptRanges};
 use tokio::io::{AsyncRead, AsyncSeek};
 
 pub use file::KnownSize;
@@ -112,7 +112,9 @@ impl<B: RangeBody + Send + 'static> Ranged<B> {
         // we don't support multiple byte ranges, only none or one
         // fortunately, only responding with one of the requested ranges and
         // no more seems to be compliant with the HTTP spec.
-        let range = self.range.and_then(|header| header.iter().nth(0));
+        let range = self.range.and_then(|range| {
+            range.satisfiable_ranges(total_bytes).nth(0)
+        });
 
         // pull seek positions out of range header
         let seek_start = match range {
@@ -200,10 +202,8 @@ impl<B: RangeBody + Send + 'static> IntoResponse for RangedResponse<B> {
 mod tests {
     use std::io;
 
-    use axum::headers::ContentRange;
-    use axum::headers::Header;
-    use axum::headers::Range;
     use axum::http::HeaderValue;
+    use axum_extra::headers::{ContentRange, Header, Range};
     use bytes::Bytes;
     use futures::{pin_mut, Stream, StreamExt};
     use tokio::fs::File;
