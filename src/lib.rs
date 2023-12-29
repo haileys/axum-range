@@ -274,16 +274,18 @@ mod tests {
 
     #[tokio::test]
     async fn test_unbounded_start_response() {
+        // unbounded ranges in HTTP are actually a suffix
+
         let ranged = Ranged::new(range("bytes=-20"), body().await);
 
         let response = ranged.try_respond().expect("try_respond should return Ok");
 
-        assert_eq!(21, response.content_length.0);
+        assert_eq!(20, response.content_length.0);
 
-        let expected_content_range = ContentRange::bytes(0..21, 54).unwrap();
+        let expected_content_range = ContentRange::bytes(34..54, 54).unwrap();
         assert_eq!(Some(expected_content_range), response.content_range);
 
-        assert_eq!("Hello world this is a",
+        assert_eq!(" range requests on!\n",
             &collect_stream(response.stream).await);
     }
 
