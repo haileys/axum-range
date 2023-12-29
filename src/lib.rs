@@ -13,9 +13,10 @@
 //! type implementing [`AsyncSeek`].
 //!
 //! ```
-//! use axum::{Router, TypedHeader};
-//! use axum::headers::Range;
+//! use axum::Router;
 //! use axum::routing::get;
+//! use axum_extra::TypedHeader;
+//! use axum_extra::headers::Range;
 //!
 //! use tokio::fs::File;
 //!
