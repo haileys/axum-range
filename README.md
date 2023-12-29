@@ -9,8 +9,8 @@ MIT license.
 ### Example usage
 
 ```rust
-use axum::TypedHeader;
-use axum::headers::Range;
+use axum_extra::TypedHeader;
+use axum_extra::headers::Range;
 
 use tokio::fs::File;
 
