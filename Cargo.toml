@@ -1,6 +1,6 @@
 [package]
 name = "axum-range"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 license = "MIT"
 description = "HTTP Range responses for axum"
@@ -12,8 +12,8 @@ documentation = "https://docs.rs/axum-range"
 run_server_in_example = []
 
 [dependencies]
-axum = { version = "0.7", default-features = false }
-axum-extra = { version = "0.9", features = ["typed-header"] }
+axum = { version = "0.8", default-features = false }
+axum-extra = { version = "0.10", features = ["typed-header"] }
 bytes = "1.5"
 futures = { version = "0.3", default-features = false, features = ["std"] }
 http-body = "1.0"
