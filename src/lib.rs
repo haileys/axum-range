@@ -8,6 +8,9 @@
 //! used the [`KnownSize`] adapter struct. There is also special cased support
 //! for [`tokio::fs::File`], see the [`KnownSize::file`] method.
 //!
+//! The [`KnownSize::bytes`] method can be used to serve a byte buffer (e.g.
+//!     `Vec<u8>`, `Bytes`, etc) with range support.
+//!
 //! [`AsyncSeekStart`] is a trait defined by this crate which only allows
 //! seeking from the start of a file. It is automatically implemented for any
 //! type implementing [`AsyncSeek`].
@@ -44,7 +47,9 @@
 //! #[tokio::main]
 //! async fn main() {
 //!     // build our application with a single route
-//!     let _app = Router::<()>::new().route("/", get(file));
+//!     let _app = Router::<()>::new()
+//!         .route("/file", get(file))
+//!         .route("/bytes", get(bytes));
 //!
 //!     // run it with hyper on localhost:3000
 //!     #[cfg(feature = "run_server_in_example")]
@@ -67,8 +72,8 @@ use std::task::{Context, Poll};
 
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use axum_extra::headers::{AcceptRanges, ContentLength, ContentRange, Range};
 use axum_extra::TypedHeader;
-use axum_extra::headers::{Range, ContentRange, ContentLength, AcceptRanges};
 use tokio::io::{AsyncRead, AsyncSeek};
 
 pub use file::KnownSize;
@@ -124,9 +129,9 @@ impl<B: RangeBody + Send + 'static> Ranged<B> {
         // we don't support multiple byte ranges, only none or one
         // fortunately, only responding with one of the requested ranges and
         // no more seems to be compliant with the HTTP spec.
-        let range = self.range.and_then(|range| {
-            range.satisfiable_ranges(total_bytes).nth(0)
-        });
+        let range = self
+            .range
+            .and_then(|range| range.satisfiable_ranges(total_bytes).nth(0));
 
         // pull seek positions out of range header
         let seek_start = match range {
@@ -142,7 +147,7 @@ impl<B: RangeBody + Send + 'static> Ranged<B> {
                 } else {
                     end + 1
                 }
-            },
+            }
             _ => total_bytes,
         };
 
@@ -225,8 +230,8 @@ mod tests {
     use futures::{pin_mut, Stream, StreamExt};
     use tokio::fs::File;
 
-    use crate::Ranged;
     use crate::KnownSize;
+    use crate::Ranged;
 
     async fn collect_stream(stream: impl Stream<Item = io::Result<Bytes>>) -> String {
         let mut string = String::new();
@@ -255,8 +260,10 @@ mod tests {
 
         assert_eq!(54, response.content_length.0);
         assert!(response.content_range.is_none());
-        assert_eq!("Hello world this is a file to test range requests on!\n",
-            &collect_stream(response.stream).await);
+        assert_eq!(
+            "Hello world this is a file to test range requests on!\n",
+            &collect_stream(response.stream).await
+        );
     }
 
     #[tokio::test]
@@ -270,8 +277,10 @@ mod tests {
         let expected_content_range = ContentRange::bytes(0..30, 54).unwrap();
         assert_eq!(Some(expected_content_range), response.content_range);
 
-        assert_eq!("Hello world this is a file to ",
-            &collect_stream(response.stream).await);
+        assert_eq!(
+            "Hello world this is a file to ",
+            &collect_stream(response.stream).await
+        );
     }
 
     #[tokio::test]
@@ -285,8 +294,10 @@ mod tests {
         let expected_content_range = ContentRange::bytes(30..54, 54).unwrap();
         assert_eq!(Some(expected_content_range), response.content_range);
 
-        assert_eq!("test range requests on!\n",
-            &collect_stream(response.stream).await);
+        assert_eq!(
+            "test range requests on!\n",
+            &collect_stream(response.stream).await
+        );
     }
 
     #[tokio::test]
@@ -302,8 +313,10 @@ mod tests {
         let expected_content_range = ContentRange::bytes(34..54, 54).unwrap();
         assert_eq!(Some(expected_content_range), response.content_range);
 
-        assert_eq!(" range requests on!\n",
-            &collect_stream(response.stream).await);
+        assert_eq!(
+            " range requests on!\n",
+            &collect_stream(response.stream).await
+        );
     }
 
     #[tokio::test]
@@ -317,8 +330,7 @@ mod tests {
         let expected_content_range = ContentRange::bytes(40..54, 54).unwrap();
         assert_eq!(Some(expected_content_range), response.content_range);
 
-        assert_eq!(" requests on!\n",
-            &collect_stream(response.stream).await);
+        assert_eq!(" requests on!\n", &collect_stream(response.stream).await);
     }
 
     #[tokio::test]
@@ -332,15 +344,17 @@ mod tests {
         let expected_content_range = ContentRange::bytes(30..31, 54).unwrap();
         assert_eq!(Some(expected_content_range), response.content_range);
 
-        assert_eq!("t",
-            &collect_stream(response.stream).await);
+        assert_eq!("t", &collect_stream(response.stream).await);
     }
 
     #[tokio::test]
     async fn test_invalid_range() {
         let ranged = Ranged::new(range("bytes=30-29"), body().await);
 
-        let err = ranged.try_respond().err().expect("try_respond should return Err");
+        let err = ranged
+            .try_respond()
+            .err()
+            .expect("try_respond should return Err");
 
         let expected_content_range = ContentRange::unsatisfied_bytes(54);
         assert_eq!(expected_content_range, err.0)
@@ -355,15 +369,20 @@ mod tests {
         let expected_content_range = ContentRange::bytes(30..54, 54).unwrap();
         assert_eq!(Some(expected_content_range), response.content_range);
 
-        assert_eq!("test range requests on!\n",
-            &collect_stream(response.stream).await);
+        assert_eq!(
+            "test range requests on!\n",
+            &collect_stream(response.stream).await
+        );
     }
 
     #[tokio::test]
     async fn test_range_start_exceed_length() {
         let ranged = Ranged::new(range("bytes=99-"), body().await);
 
-        let err = ranged.try_respond().err().expect("try_respond should return Err");
+        let err = ranged
+            .try_respond()
+            .err()
+            .expect("try_respond should return Err");
 
         let expected_content_range = ContentRange::unsatisfied_bytes(54);
         assert_eq!(expected_content_range, err.0)
