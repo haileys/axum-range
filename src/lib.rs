@@ -125,17 +125,22 @@ impl<B: RangeBody + Send + 'static> Ranged<B> {
 
         let seek_end_excl = match range {
             // HTTP byte ranges are inclusive, so we translate to exclusive by adding 1:
-            Some((_, Bound::Included(end))) => end + 1,
+            Some((_, Bound::Included(end))) => {
+                if end >= total_bytes {
+                    total_bytes
+                } else {
+                    end + 1
+                }
+            },
             _ => total_bytes,
         };
 
         // check seek positions and return with 416 Range Not Satisfiable if invalid
         let seek_start_beyond_seek_end = seek_start > seek_end_excl;
-        let seek_end_beyond_file_range = seek_end_excl > total_bytes;
         // we could use >= above but I think this reads more clearly:
         let zero_length_range = seek_start == seek_end_excl;
 
-        if seek_start_beyond_seek_end || seek_end_beyond_file_range || zero_length_range {
+        if seek_start_beyond_seek_end || zero_length_range {
             let content_range = ContentRange::unsatisfied_bytes(total_bytes);
             return Err(RangeNotSatisfiable(content_range));
         }
@@ -334,10 +339,13 @@ mod tests {
     async fn test_range_end_exceed_length() {
         let ranged = Ranged::new(range("bytes=30-99"), body().await);
 
-        let err = ranged.try_respond().err().expect("try_respond should return Err");
+        let response = ranged.try_respond().expect("try_respond should return Ok");
 
-        let expected_content_range = ContentRange::unsatisfied_bytes(54);
-        assert_eq!(expected_content_range, err.0)
+        let expected_content_range = ContentRange::bytes(30..54, 54).unwrap();
+        assert_eq!(Some(expected_content_range), response.content_range);
+
+        assert_eq!("test range requests on!\n",
+            &collect_stream(response.stream).await);
     }
 
     #[tokio::test]
