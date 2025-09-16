@@ -2,6 +2,7 @@ use std::io;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
+use bytes::Bytes;
 use pin_project::pin_project;
 use tokio::io::{ReadBuf, AsyncRead, AsyncSeek, AsyncSeekExt};
 
@@ -35,6 +36,17 @@ impl<B: AsyncRead + AsyncSeek + Unpin> KnownSize<B> {
     pub async fn seek(mut body: B) -> io::Result<KnownSize<B>> {
         let byte_size = Pin::new(&mut body).seek(io::SeekFrom::End(0)).await?;
         Ok(KnownSize { byte_size, body })
+    }
+}
+
+impl KnownSize<io::Cursor<Bytes>> {
+    /// Uses the length of the vector as the byte size.
+    pub fn bytes<B>(bytes: B) -> Self 
+    where B: Into<Bytes> {
+        let bytes = bytes.into();
+        let byte_size = bytes.len() as u64;
+        let cursor = io::Cursor::new(bytes);
+        KnownSize { byte_size, body: cursor }
     }
 }
 
@@ -75,6 +87,8 @@ impl<B: AsyncRead + AsyncSeekStart> RangeBody for KnownSize<B> {
 
 #[cfg(test)]
 mod tests {
+
+    use bytes::Bytes;
     use tokio::fs::File;
     use crate::RangeBody;
 
@@ -91,6 +105,21 @@ mod tests {
     async fn test_seek_size() {
         let file = File::open("test/fixture.txt").await.unwrap();
         let known_size = KnownSize::seek(file).await.unwrap();
+        assert_eq!(54, known_size.byte_size());
+    }
+
+    #[tokio::test]
+    async fn test_bytes_size() {
+        let data = tokio::fs::read("test/fixture.txt").await.unwrap();
+        let data = Bytes::from(data);
+        let known_size = KnownSize::bytes(data);
+        assert_eq!(54, known_size.byte_size());
+    }
+
+    #[tokio::test]
+    async fn test_vec_size() {
+        let data = tokio::fs::read("test/fixture.txt").await.unwrap();
+        let known_size = KnownSize::bytes(data);
         assert_eq!(54, known_size.byte_size());
     }
 }
