@@ -90,7 +90,7 @@ mod tests {
     #[tokio::test]
     async fn test_seek_size() {
         let file = File::open("test/fixture.txt").await.unwrap();
-        let known_size = KnownSize::file(file).await.unwrap();
+        let known_size = KnownSize::seek(file).await.unwrap();
         assert_eq!(54, known_size.byte_size());
     }
 }
